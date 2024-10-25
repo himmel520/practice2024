@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebSocket Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        h2 {
+            color: #555;
+        }
+
+        ul {
+            list-style-type: none;
+            padding: 0;
+        }
+
+        li {
+            padding: 10px;
+            background: #fff;
+            border: 1px solid #ddd;
+            margin: 5px 0;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        li:hover {
+            background: #e2e2e2;
+        }
+
+        .url-list {
+            display: none;
+            margin-top: 10px;
+            padding-left: 20px;
+        }
+
+        .download-instruction {
+            margin-top: 5px;
+            font-style: italic;
+            display: none; /* По умолчанию скрыто */
+        }
+
+        #progress {
+            margin-top: 20px;
+            font-weight: bold;
+        }
+
+        #contentList {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-start;
+        }
+
+        .loading {
+            font-weight: bold;
+            color: blue;
+        }
+
+        .downloaded-file {
+            width: 200px;
+            height: 300px;
+            margin: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: #fff;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        img,
+        video {
+            max-width: 100%;
+            max-height: 100%;
+        }
+
+        .content-display {
+            white-space: pre-wrap;
+            padding: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Client</h1>
+
+    <h2>Доступные ключевые слова:</h2>
+    <ul id="mappingList"></ul>
+
+    <h2>Статус загрузки:</h2>
+    <div id="status"></div>
+
+    <div id="progress"></div>
+
+    <h2>Загруженный контент:</h2>
+    <div id="contentList"></div>
+
+    <script>
+        const ws = new WebSocket("ws://localhost:8080/api/v1/ws");
+
+        ws.onopen = () => {
+            console.log("Соединение установлено");
+            ws.send(JSON.stringify({ action: "get_mapping" }));
+            loadContentFromLocalStorage(); 
+        };
+
+        let mappingReceived = false;
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            if (data && !mappingReceived) {
+                mappingReceived = true;
+                const mappingList = document.getElementById("mappingList");
+
+                Object.keys(data).forEach((keyword) => {
+                    let li = Array.from(mappingList.children).find(
+                        (item) => item.textContent === keyword
+                    );
+                    if (!li) {
+                        li = document.createElement("li");
+                        li.textContent = keyword;
+
+                        const urlList = document.createElement("ul");
+                        urlList.classList.add("url-list");
+
+                        data[keyword].forEach((url) => {
+                            const urlLi = document.createElement("li");
+                            urlLi.textContent = url;
+
+                            urlLi.onclick = (event) => {
+                                event.stopPropagation();
+                                downloadContent(url);
+                            };
+                            urlList.appendChild(urlLi);
+                        });
+
+                        li.appendChild(urlList);
+                        mappingList.appendChild(li);
+
+                        const instruction = document.createElement("div");
+                        instruction.classList.add("download-instruction");
+                        instruction.textContent = "Нажмите, чтобы скачать."; 
+                        li.appendChild(instruction); 
+
+                        li.onclick = () => {
+                            const urlList = li.querySelector(".url-list");
+                            const instruction = li.querySelector(".download-instruction");
+                            if (urlList) {
+                                const isDisplayed = urlList.style.display === "block";
+                                urlList.style.display = isDisplayed ? "none" : "block";
+                                instruction.style.display = isDisplayed ? "none" : "block"; 
+                            }
+                        };
+                    }
+                });
+            }
+
+            if (data.action === "progress") {
+                const progress = document.getElementById("progress");
+                progress.textContent = `Загрузка: ${data.loaded.toFixed(
+                    2
+                )} MB из ${data.total.toFixed(2)} MB (${data.progress.toFixed(2)}%)`;
+            }
+
+            if (data.action === "completed") {
+                const url = data.url;
+                const contentType = data["content-type"];
+
+                const contentBytes = Uint8Array.from(atob(data.content), (c) =>
+                    c.charCodeAt(0)
+                );
+                const blob = new Blob([contentBytes], { type: contentType });
+
+                saveContentToLocalStorage(url, blob, contentType);
+
+                const status = document.getElementById("status");
+                status.innerHTML = ''; 
+
+                const contentData = {
+                    base64: URL.createObjectURL(blob), 
+                    contentType: contentType,
+                };
+                displayBlobContent(url, contentData);
+            }
+        };
+
+        ws.onerror = (error) => {
+            console.error("Ошибка WebSocket:", error);
+        };
+
+        function downloadContent(url) {
+            const status = document.getElementById("status");
+            status.innerHTML = `<span class="loading">Загрузка контента с ${url}...</span>`;
+            ws.send(JSON.stringify({ action: "download", url: url }));
+        }
+
+        function saveContentToLocalStorage(url, blob, contentType) {
+            const reader = new FileReader();
+            reader.onloadend = function () {
+                const base64data = reader.result; 
+                const contentData = {
+                    base64: base64data, 
+                    contentType: contentType,
+                };
+                localStorage.setItem(url, JSON.stringify(contentData));
+            };
+            reader.readAsDataURL(blob); 
+        }
+
+        function loadContentFromLocalStorage() {
+            for (let i = 0; i < localStorage.length; i++) {
+                const url = localStorage.key(i);
+                const contentData = localStorage.getItem(url);
+                if (contentData) {
+                    try {
+                        const parsedData = JSON.parse(contentData);
+                        if (parsedData.base64 && parsedData.contentType) {
+                            displayBlobContent(url, parsedData);
+                        }
+                    } catch (error) {
+                        console.error("Ошибка парсинга данных из localStorage:", error);
+                    }
+                }
+            }
+        }
+
+        function displayBlobContent(url, contentData) {
+            const contentItem = document.createElement("div");
+            contentItem.classList.add("downloaded-file");
+
+            const { base64, contentType } = contentData;
+
+            if (contentType.startsWith("image/")) {
+                const img = document.createElement("img");
+                img.src = base64; 
+                img.alt = `Изображение из ${url}`;
+                contentItem.appendChild(img);
+            } else if (contentType.startsWith("video/")) {
+                const video = document.createElement("video");
+                video.src = base64; 
+                video.controls = true;
+                contentItem.appendChild(video);
+            } else {
+                const textDiv = document.createElement("div");
+                textDiv.classList.add("content-display");
+                textDiv.textContent = `Содержимое не поддерживается для отображения. URL: ${url}`;
+                contentItem.appendChild(textDiv);
+            }
+
+            document.getElementById("contentList").appendChild(contentItem);
+        }
+
+        function displayDownloadedContent() {
+            const contentList = document.getElementById("contentList");
+            contentList.innerHTML = ""; 
+
+            for (let i = 0; i < localStorage.length; i++) {
+                const url = localStorage.key(i);
+                const contentData = localStorage.getItem(url);
+
+                if (contentData) {
+                    try {
+                        const parsedData = JSON.parse(contentData);
+                        if (parsedData.base64 && parsedData.contentType) {
+                            displayBlobContent(url, parsedData);
+                        }
+                    } catch (error) {
+                        console.error("Ошибка парсинга данных из localStorage:", error);
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>
